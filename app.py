@@ -17,6 +17,7 @@ SUPABASE_KEY = "sb_publishable_MpHqZeFn_U-lM19lpEBtMA_NR3Mx3mO"
 TABLE_SENSORS = "sensor_measurements"
 TABLE_RAIN = "weather_logs"
 
+
 # 正则表达式
 REGEX_PATTERN = re.compile(r"^([a-zA-Z0-9]+)(?:号)?([\u4e00-\u9fa5]+)\s+([\u4e00-\u9fa5]+)(?:[\(（](.+)[\)）])?(?:\.\d+)?$")
 
@@ -112,27 +113,37 @@ def upload_to_supabase(data_list):
 def get_sensor_data(start_time, end_time):
     if not supabase: return pd.DataFrame()
     try:
-        response = supabase.table(TABLE_SENSORS).select("*").gte("timestamp", start_time.isoformat()).lte("timestamp", end_time.isoformat()).order("timestamp").execute()
+        response = supabase.table(TABLE_SENSORS).select("*") \
+            .gte("timestamp", start_time.isoformat()) \
+            .lte("timestamp", end_time.isoformat()) \
+            .order("timestamp").execute()
         df = pd.DataFrame(response.data)
         if not df.empty:
             df['timestamp'] = pd.to_datetime(df['timestamp'])
             df['value'] = pd.to_numeric(df['value'], errors='coerce')
         return df
     except Exception as e:
-        st.sidebar.error(f"查询出错: {e}")
         return pd.DataFrame()
 
 def get_rainfall_data(start_time, end_time):
     if not supabase: return pd.DataFrame()
     try:
-        response = supabase.table(TABLE_RAIN).select("created_at, rain_intensity").gte("created_at", start_time.isoformat()).lte("created_at", end_time.isoformat()).order("created_at").execute()
+        # 【关键修正】读取 created_at 和 rain_intensity
+        response = supabase.table(TABLE_RAIN).select("created_at, rain_intensity") \
+            .gte("created_at", start_time.isoformat()) \
+            .lte("created_at", end_time.isoformat()) \
+            .order("created_at").execute()
+        
         df = pd.DataFrame(response.data)
         if not df.empty:
+            # 重命名为 timestamp 和 value 以便通用绘图
             df = df.rename(columns={"created_at": "timestamp", "rain_intensity": "value"})
             df['timestamp'] = pd.to_datetime(df['timestamp'])
             df['value'] = pd.to_numeric(df['value'], errors='coerce')
         return df
-    except: return pd.DataFrame()
+    except Exception as e:
+        st.sidebar.error(f"降雨读取失败: {e}")
+        return pd.DataFrame()
 
 def process_data(series, window_size, spike_threshold):
     if spike_threshold > 0:
@@ -156,17 +167,46 @@ tab1, tab2 = st.tabs(["📈 数据绘图", "📂 数据上传"])
 # --- TAB 1: 绘图功能 ---
 with tab1:
     with st.sidebar:
-        st.header("1. 绘图控制")
+        st.header("1. 数据库侦探 🕵️")
+        # 实时查询数据库里的时间范围，帮助用户选择
+        if st.button("🔍 检测数据时间范围"):
+            try:
+                # 查传感器范围
+                res_s_min = supabase.table(TABLE_SENSORS).select("timestamp").order("timestamp", desc=False).limit(1).execute()
+                res_s_max = supabase.table(TABLE_SENSORS).select("timestamp").order("timestamp", desc=True).limit(1).execute()
+                
+                # 查降雨范围
+                res_r_min = supabase.table(TABLE_RAIN).select("created_at").order("created_at", desc=False).limit(1).execute()
+                res_r_max = supabase.table(TABLE_RAIN).select("created_at").order("created_at", desc=True).limit(1).execute()
+
+                st.info("📊 **传感器数据范围**:")
+                if res_s_min.data: st.write(f"{res_s_min.data[0]['timestamp'][:10]} -> {res_s_max.data[0]['timestamp'][:10]}")
+                else: st.write("无数据")
+
+                st.info("🌧️ **降雨数据范围**:")
+                if res_r_min.data: st.write(f"{res_r_min.data[0]['created_at'][:10]} -> {res_r_max.data[0]['created_at'][:10]}")
+                else: st.write("无数据")
+                
+            except Exception as e:
+                st.error(f"检测失败: {e}")
+
+        st.markdown("---")
+        st.header("2. 绘图控制")
+        
+        # 默认最近 30 天
+        default_start = datetime.now() - timedelta(days=30)
+        default_end = datetime.now()
+        
         c1, c2 = st.columns(2)
-        start_date = c1.date_input("开始日期", datetime.now() - timedelta(days=30))
-        end_date = c2.date_input("结束日期", datetime.now())
+        start_date = c1.date_input("开始日期", default_start)
+        end_date = c2.date_input("结束日期", default_end)
         show_rainfall = st.checkbox("叠加降雨量", value=True)
         
-        st.header("2. 数据清洗")
+        st.header("3. 数据清洗")
         ma_window = st.slider("平滑窗口", 1, 20, 1)
         spike_thresh = st.number_input("去噪阈值", 0.0, step=0.1)
 
-        st.header("3. 模式选择")
+        st.header("4. 模式选择")
         plot_mode = st.radio("分窗逻辑", ["按【号码】自动分窗", "按【物理量】自动分窗", "自定义选择"])
         
         st.markdown("---")
@@ -184,118 +224,131 @@ with tab1:
             st.session_state['raw_data'] = df_sensor
             st.session_state['rain_data'] = df_rain
             
-            if df_sensor.empty:
-                st.sidebar.warning(f"⚠️ 在 {start_date} 至 {end_date} 期间未找到数据。")
+            if df_sensor.empty and df_rain.empty:
+                st.sidebar.warning(f"⚠️ 当前时间段 ({start_date} -> {end_date}) 内，传感器和降雨数据都为空。请使用上方【数据库侦探】检查实际有数据的日期。")
             else:
-                st.sidebar.success(f"✅ 已加载 {len(df_sensor)} 条数据")
+                msg = []
+                if not df_sensor.empty: msg.append(f"传感器 {len(df_sensor)} 条")
+                if not df_rain.empty: msg.append(f"降雨 {len(df_rain)} 条")
+                st.sidebar.success(f"✅ 加载成功: {', '.join(msg)}")
 
     # 绘图逻辑
-    if 'raw_data' in st.session_state and not st.session_state['raw_data'].empty:
+    if 'raw_data' in st.session_state:
         df = st.session_state['raw_data']
         df_rain = st.session_state.get('rain_data', pd.DataFrame())
         
-        all_ids = sorted(df['sensor_id'].unique())
-        all_vars = sorted(df['variable_type'].unique())
-        plots_config = []
-
-        if plot_mode == "自定义选择":
-            num = st.number_input("窗口数量", 1, 10, 1)
-            for i in range(num):
-                c1, c2 = st.columns(2)
-                ids = c1.multiselect(f"图{i+1} 号码", all_ids, key=f"id{i}")
-                vars_ = c2.multiselect(f"图{i+1} 物理量", all_vars, key=f"v{i}")
-                if ids and vars_: plots_config.append({"title":f"自定义窗口 {i+1}","ids":ids,"vars":vars_})
-        elif plot_mode == "按【号码】自动分窗":
-            t_ids = st.multiselect("选择号码", all_ids, default=all_ids)
-            t_vars = st.multiselect("选择物理量", all_vars, default=all_vars)
-            for sid in t_ids: plots_config.append({"title":f"{sid} 数据","ids":[sid],"vars":t_vars})
-        elif plot_mode == "按【物理量】自动分窗":
-            t_vars = st.multiselect("选择物理量", all_vars, default=all_vars)
-            t_ids = st.multiselect("选择号码", all_ids, default=all_ids)
-            for v in t_vars: plots_config.append({"title":f"{v} 对比","ids":t_ids,"vars":[v]})
-
-        if st.button("🎨 生成图表", key="btn_plot", type="primary") and plots_config:
+        # 只要有其中一种数据就可以尝试画图
+        if not df.empty or not df_rain.empty:
             
-            # --- 智能网格布局 ---
-            num_plots = len(plots_config)
-            if num_plots == 1: cols_per_row = 1
-            elif num_plots <= 4: cols_per_row = 2
-            else: cols_per_row = 3
-            
-            for i in range(0, num_plots, cols_per_row):
-                cols = st.columns(cols_per_row)
-                for j in range(cols_per_row):
-                    if i + j < num_plots:
-                        config = plots_config[i + j]
-                        with cols[j]:
-                            # 【修正】: 使用 (10, 6) 黄金比例，既不扁也不窄
-                            fig, ax1 = plt.subplots(figsize=(10, 6)) 
-                            
-                            has_data = False
-                            
-                            plotted_vars = set()
-                            plotted_units = set()
+            # 如果传感器数据为空，为了防报错，需要造一些空列表
+            all_ids = sorted(df['sensor_id'].unique()) if not df.empty else []
+            all_vars = sorted(df['variable_type'].unique()) if not df.empty else []
+            plots_config = []
 
-                            for sid in config['ids']:
-                                for vtype in config['vars']:
-                                    sub = df[(df['sensor_id']==sid)&(df['variable_type']==vtype)].sort_values('timestamp')
-                                    if not sub.empty:
-                                        has_data = True
-                                        y = process_data(sub['value'], ma_window, spike_thresh)
-                                        
-                                        unit = sub['unit'].iloc[0] if pd.notna(sub['unit'].iloc[0]) else ""
-                                        plotted_vars.add(vtype)
-                                        plotted_units.add(unit)
-                                        
-                                        # 图例带单位
-                                        label_str = f"{sid}-{vtype} ({unit})"
-                                        ax1.plot(sub['timestamp'], y, label=label_str, linewidth=1.5)
-                            
-                            ax2 = ax1.twinx()
-                            if show_rainfall and not df_rain.empty:
-                                ax2.plot(df_rain['timestamp'], df_rain['value'], color='#1f77b4', linestyle='--', alpha=0.4, label='降雨量 (mm)')
-                            
-                            # === 样式精修 ===
-                            fp = zh_font if zh_font else None
-                            
-                            # 1. 动态左轴标题
-                            if len(plotted_vars) == 1 and len(plotted_units) == 1:
-                                var_name = list(plotted_vars)[0]
-                                unit_name = list(plotted_units)[0]
-                                y_label = f"{var_name} ({unit_name})"
-                            else:
-                                y_label = "数值 (Value)"
+            # 只有当有传感器数据时才进行分窗配置，否则提示
+            if not df.empty:
+                if plot_mode == "自定义选择":
+                    num = st.number_input("窗口数量", 1, 10, 1)
+                    for i in range(num):
+                        c1, c2 = st.columns(2)
+                        ids = c1.multiselect(f"图{i+1} 号码", all_ids, key=f"id{i}")
+                        vars_ = c2.multiselect(f"图{i+1} 物理量", all_vars, key=f"v{i}")
+                        if ids and vars_: plots_config.append({"title":f"自定义窗口 {i+1}","ids":ids,"vars":vars_})
+                elif plot_mode == "按【号码】自动分窗":
+                    t_ids = st.multiselect("选择号码", all_ids, default=all_ids)
+                    t_vars = st.multiselect("选择物理量", all_vars, default=all_vars)
+                    for sid in t_ids: plots_config.append({"title":f"{sid} 数据","ids":[sid],"vars":t_vars})
+                elif plot_mode == "按【物理量】自动分窗":
+                    t_vars = st.multiselect("选择物理量", all_vars, default=all_vars)
+                    t_ids = st.multiselect("选择号码", all_ids, default=all_ids)
+                    for v in t_vars: plots_config.append({"title":f"{v} 对比","ids":t_ids,"vars":[v]})
 
-                            ax1.set_ylabel(y_label, fontproperties=fp, fontsize=12)
-                            
-                            # 2. 下轴时间刻度优化 (水平放置 + 稀疏化)
-                            ax1.set_xlabel("时间 (Time)", fontproperties=fp, fontsize=12)
-                            # 限制刻度数量，防止水平放置时挤在一起
-                            ax1.xaxis.set_major_locator(ticker.MaxNLocator(nbins=6)) 
-                            
-                            # 3. 标题
-                            ax1.set_title(config['title'], fontproperties=fp, fontsize=14, fontweight='bold', pad=10)
-                            
-                            # 4. 刻度样式
-                            ax1.tick_params(axis='both', direction='in', which='both', top=True, right=False, labeltop=False, labelright=False)
-                            ax2.tick_params(axis='y', direction='in', right=True, labelright=False)
-                            ax2.set_ylabel("降雨量 (mm)", fontproperties=fp, fontsize=12) 
-                            ax1.grid(True, linestyle=':', alpha=0.3)
-                            
-                            # 5. 图例
-                            if has_data:
-                                lines1, labels1 = ax1.get_legend_handles_labels()
-                                if show_rainfall:
+            # 如果只有降雨数据，也可以画一个纯降雨图
+            if df.empty and not df_rain.empty:
+                plots_config.append({"title":"纯降雨数据展示", "ids":[], "vars":[]})
+
+            if st.button("🎨 生成图表", key="btn_plot", type="primary") and plots_config:
+                
+                num_plots = len(plots_config)
+                if num_plots == 1: cols_per_row = 1
+                elif num_plots <= 4: cols_per_row = 2
+                else: cols_per_row = 3
+                
+                for i in range(0, num_plots, cols_per_row):
+                    cols = st.columns(cols_per_row)
+                    for j in range(cols_per_row):
+                        if i + j < num_plots:
+                            config = plots_config[i + j]
+                            with cols[j]:
+                                # 使用 10:6 黄金科研比例
+                                fig, ax1 = plt.subplots(figsize=(10, 6)) 
+                                
+                                has_sensor_data = False
+                                
+                                plotted_vars = set()
+                                plotted_units = set()
+
+                                # 画左轴 (传感器)
+                                if not df.empty:
+                                    for sid in config['ids']:
+                                        for vtype in config['vars']:
+                                            sub = df[(df['sensor_id']==sid)&(df['variable_type']==vtype)].sort_values('timestamp')
+                                            if not sub.empty:
+                                                has_sensor_data = True
+                                                y = process_data(sub['value'], ma_window, spike_thresh)
+                                                unit = sub['unit'].iloc[0] if pd.notna(sub['unit'].iloc[0]) else ""
+                                                plotted_vars.add(vtype)
+                                                plotted_units.add(unit)
+                                                label_str = f"{sid}-{vtype} ({unit})"
+                                                ax1.plot(sub['timestamp'], y, label=label_str, linewidth=1.5)
+                                
+                                # 画右轴 (降雨量)
+                                ax2 = ax1.twinx()
+                                has_rain_data = False
+                                if show_rainfall and not df_rain.empty:
+                                    ax2.plot(df_rain['timestamp'], df_rain['value'], color='#1f77b4', linestyle='--', alpha=0.4, label='降雨量 (mm)')
+                                    has_rain_data = True
+                                
+                                # === 样式精修 ===
+                                fp = zh_font if zh_font else None
+                                
+                                # 左轴标题
+                                if has_sensor_data:
+                                    if len(plotted_vars) == 1 and len(plotted_units) == 1:
+                                        y_label = f"{list(plotted_vars)[0]} ({list(plotted_units)[0]})"
+                                    else:
+                                        y_label = "数值 (Value)"
+                                    ax1.set_ylabel(y_label, fontproperties=fp, fontsize=12)
+                                else:
+                                    # 如果没左轴数据，隐藏左轴刻度
+                                    ax1.set_yticks([])
+                                
+                                # 下轴
+                                ax1.set_xlabel("时间 (Time)", fontproperties=fp, fontsize=12)
+                                ax1.xaxis.set_major_locator(ticker.MaxNLocator(nbins=6)) 
+                                
+                                # 标题
+                                ax1.set_title(config['title'], fontproperties=fp, fontsize=14, fontweight='bold', pad=10)
+                                
+                                # 刻度
+                                ax1.tick_params(axis='both', direction='in', which='both', top=True, right=False, labeltop=False, labelright=False)
+                                ax2.tick_params(axis='y', direction='in', right=True, labelright=False)
+                                
+                                # 右轴标题
+                                if has_rain_data:
+                                    ax2.set_ylabel("降雨量 (mm)", fontproperties=fp, fontsize=12)
+                                
+                                ax1.grid(True, linestyle=':', alpha=0.3)
+                                
+                                # 图例
+                                if has_sensor_data or has_rain_data:
+                                    lines1, labels1 = ax1.get_legend_handles_labels()
                                     lines2, labels2 = ax2.get_legend_handles_labels()
                                     leg = ax1.legend(lines1 + lines2, labels1 + labels2, loc='best', frameon=False)
-                                else:
-                                    leg = ax1.legend(loc='best', frameon=False)
+                                    if fp:
+                                        for text in leg.get_texts(): text.set_fontproperties(fp)
                                 
-                                if fp:
-                                    for text in leg.get_texts():
-                                        text.set_fontproperties(fp)
-                            
-                            st.pyplot(fig)
+                                st.pyplot(fig)
 
 # --- TAB 2: 数据上传 ---
 with tab2:
@@ -311,3 +364,4 @@ with tab2:
                 else: st.error(upload_msg)
         else:
             st.error(msg)
+
