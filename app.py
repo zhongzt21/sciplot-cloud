@@ -81,12 +81,12 @@ def optimize_dataframe(df, time_col='timestamp'):
 def get_sensor_data(start_time, end_time):
     if not supabase: return pd.DataFrame()
     try:
-        # 扩大查询上限到 50万
+        # 将 limit 从 500000 降为 200000，防止超时
         response = supabase.table(TABLE_SENSORS) \
             .select("timestamp, sensor_id, variable_type, value, unit") \
             .gte("timestamp", start_time.isoformat()) \
             .lte("timestamp", end_time.isoformat()) \
-            .limit(500000) \
+            .limit(200000) \
             .order("timestamp").execute()
         
         df = pd.DataFrame(response.data)
@@ -96,20 +96,23 @@ def get_sensor_data(start_time, end_time):
                 df['timestamp'] = df['timestamp'].dt.tz_localize(None)
             df['value'] = pd.to_numeric(df['value'], errors='coerce')
             df = df.dropna(subset=['timestamp', 'value'])
-            df = optimize_dataframe(df) # 调用优化
+            
+            # 如果数据量依然很大，自动降采样
+            df = optimize_dataframe(df) 
         return df
     except Exception as e:
-        st.sidebar.error(f"⚠️ 传感器读取失败: {e}")
+        st.sidebar.error(f"⚠️ 传感器读取超时或失败: {e}")
+        st.sidebar.info("💡 建议：请在 Supabase SQL Editor 中运行 'CREATE INDEX idx_sensor_time ON sensor_measurements (timestamp);'")
         return pd.DataFrame()
 
 def get_rainfall_data(start_time, end_time):
     if not supabase: return pd.DataFrame()
     try:
-        # 扩大查询上限到 50万
+        # 将 limit 从 500000 降为 200000
         response = supabase.table(TABLE_RAIN).select("created_at, rain_intensity") \
             .gte("created_at", start_time.isoformat()) \
             .lte("created_at", end_time.isoformat()) \
-            .limit(500000) \
+            .limit(200000) \
             .order("created_at").execute()
         
         df = pd.DataFrame(response.data)
@@ -341,6 +344,7 @@ with tab2:
                 else: st.error(upload_msg)
         else:
             st.error(msg)
+
 
 
 
