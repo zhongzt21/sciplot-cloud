@@ -78,31 +78,88 @@ def optimize_dataframe(df, time_col='timestamp'):
     resampled = df.groupby(['sensor_id', 'variable_type', 'unit'])['value'].resample(rule).mean().reset_index()
     return resampled
 
+# ================= 替换原有的 get_sensor_data =================
 def get_sensor_data(start_time, end_time):
     if not supabase: return pd.DataFrame()
+    
+    all_chunks = []
+    current_cursor = start_time
+    
+    # 限制最大读取次数，防止死循环 (假设每次2万条，50次就是100万条，足够了)
+    MAX_LOOPS = 50
+    BATCH_SIZE = 20000 
+    
+    # 进度提示
+    status_text = st.sidebar.empty()
+    progress_bar = st.sidebar.progress(0)
+    
     try:
-        # 将 limit 从 500000 降为 200000，防止超时
-        response = supabase.table(TABLE_SENSORS) \
-            .select("timestamp, sensor_id, variable_type, value, unit") \
-            .gte("timestamp", start_time.isoformat()) \
-            .lte("timestamp", end_time.isoformat()) \
-            .limit(200000) \
-            .order("timestamp").execute()
+        for i in range(MAX_LOOPS):
+            # 1. 每次只查 BATCH_SIZE 条，速度快，不超时
+            response = supabase.table(TABLE_SENSORS) \
+                .select("timestamp, sensor_id, variable_type, value, unit") \
+                .gt("timestamp", current_cursor.isoformat()) \
+                .lte("timestamp", end_time.isoformat()) \
+                .limit(BATCH_SIZE) \
+                .order("timestamp").execute()
+            
+            data = response.data
+            
+            if not data:
+                break # 没数据了，停止
+                
+            # 转为 DataFrame
+            chunk_df = pd.DataFrame(data)
+            all_chunks.append(chunk_df)
+            
+            # 更新进度
+            count = len(chunk_df)
+            total_loaded = sum([len(df) for df in all_chunks])
+            status_text.text(f"📥 已加载 {total_loaded} 条数据...")
+            progress_bar.progress(min((i + 1) / MAX_LOOPS, 1.0))
+            
+            # 2. 更新游标：将最后一条数据的时间作为下一次查询的起点
+            last_time_str = data[-1]['timestamp']
+            # 简单解析时间字符串，防止时区问题
+            current_cursor = pd.to_datetime(last_time_str).replace(tzinfo=None)
+            
+            # 如果这一次没取满，说明已经是最后一批了
+            if count < BATCH_SIZE:
+                break
         
-        df = pd.DataFrame(response.data)
+        # 清除进度条
+        status_text.empty()
+        progress_bar.empty()
+        
+        # 3. 合并所有碎片
+        if not all_chunks:
+            return pd.DataFrame()
+            
+        df = pd.concat(all_chunks, ignore_index=True)
+        
+        # 4. 标准清洗流程
         if not df.empty:
+            # 统一转时间
             df['timestamp'] = pd.to_datetime(df['timestamp'], errors='coerce')
+            
+            # 强制去时区 (关键：防止和降雨数据打架)
             if df['timestamp'].dt.tz is not None:
                 df['timestamp'] = df['timestamp'].dt.tz_localize(None)
+                
             df['value'] = pd.to_numeric(df['value'], errors='coerce')
             df = df.dropna(subset=['timestamp', 'value'])
             
-            # 如果数据量依然很大，自动降采样
-            df = optimize_dataframe(df) 
+            # 5. 【关键】数据量太大时，执行智能降采样
+            # 这一步能把 100万条数据浓缩成 5000个点，既保留形状，又让网页不卡顿
+            df = optimize_dataframe(df)
+            
         return df
+
     except Exception as e:
-        st.sidebar.error(f"⚠️ 传感器读取超时或失败: {e}")
-        st.sidebar.info("💡 建议：请在 Supabase SQL Editor 中运行 'CREATE INDEX idx_sensor_time ON sensor_measurements (timestamp);'")
+        st.sidebar.error(f"⚠️ 分页读取中断: {e}")
+        # 即使报错，也尝试返回已经读到的部分数据
+        if all_chunks:
+            return pd.concat(all_chunks, ignore_index=True)
         return pd.DataFrame()
 
 def get_rainfall_data(start_time, end_time):
@@ -344,6 +401,7 @@ with tab2:
                 else: st.error(upload_msg)
         else:
             st.error(msg)
+
 
 
 
