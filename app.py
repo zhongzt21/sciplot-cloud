@@ -9,8 +9,8 @@ import os
 import requests
 
 # ================= 1. 配置区域 =================
-SUPABASE_URL = "你的_SUPABASE_URL"
-SUPABASE_KEY = "你的_SUPABASE_KEY"
+SUPABASE_URL = "https://vetupomjinhylqpxnrhn.supabase.co"
+SUPABASE_KEY = "sb_publishable_MpHqZeFn_U-lM19lpEBtMA_NR3Mx3mO"
 
 TABLE_SENSORS = "sensor_measurements"
 TABLE_RAIN = "weather_logs"
@@ -304,3 +304,4 @@ with tab2:
                 else: st.error(upload_msg)
         else:
             st.error(msg)
+
