@@ -80,11 +80,10 @@ def parse_excel_file(uploaded_file):
     return processed_data, f"解析完成，提取到 {len(processed_data)} 条数据"
 
 def upload_to_supabase(data_list):
-    """批量上传数据 (已修复重复报错问题)"""
+    """批量上传数据 (跳过策略 - 修复版)"""
     if not supabase: return False, "数据库未连接"
     
-    # 稍微调小一点 batch_size，防止请求体过大
-    batch_size = 500 
+    batch_size = 500  # 保持较小的批次以提高稳定性
     total = len(data_list)
     progress_bar = st.progress(0)
     status_text = st.empty()
@@ -93,20 +92,23 @@ def upload_to_supabase(data_list):
         for i in range(0, total, batch_size):
             batch = data_list[i:i+batch_size]
             
-            # 【关键修改】
-            # ignore_duplicates=True: 如果数据已存在，则忽略（不报错，保留旧数据）。
-            # 这样就能实现“只插入新时间的数据”的效果。
-            supabase.table(TABLE_SENSORS).upsert(batch, ignore_duplicates=True).execute()
+            # 【核心修正】
+            # 1. on_conflict: 明确告诉数据库根据这三列来判断是否重复
+            # 2. ignore_duplicates=True: 告诉数据库遇到重复时“什么也不做” (DO NOTHING)
+            supabase.table(TABLE_SENSORS).upsert(
+                batch, 
+                on_conflict="timestamp, sensor_id, variable_type", 
+                ignore_duplicates=True
+            ).execute()
             
             # 更新进度
             progress = min((i + batch_size) / total, 1.0)
             progress_bar.progress(progress)
-            status_text.text(f"正在上传... {int(progress*100)}% (会自动跳过重复数据)")
+            status_text.text(f"正在上传... {int(progress*100)}% (重复数据已自动跳过)")
             
-        status_text.text("✅ 上传完成！(重复数据已自动忽略)")
+        status_text.text("✅ 上传完成！(重复数据未入库)")
         return True, "成功写入数据库"
     except Exception as e:
-        # 如果还有其他错误，打印出来
         return False, f"上传中断: {e}"
 
 # ... (保留原有的 get_sensor_data, get_rainfall_data, process_data 函数) ...
@@ -263,3 +265,4 @@ with tab2:
         else:
 
             st.error(msg)
+
