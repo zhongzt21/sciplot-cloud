@@ -24,7 +24,7 @@ REGEX_PATTERN = re.compile(r"^([a-zA-Z0-9]+)(?:号)?([\u4e00-\u9fa5]+)\s+([\u4e0
 @st.cache_resource
 def init_connection():
     if "你的_SUPABASE" in SUPABASE_URL:
-        st.error("❌ 错误：请在代码第 13-14 行填入你自己的 Supabase URL 和 Key！")
+        st.error("❌ 错误：请在代码第 14-15 行填入你自己的 Supabase URL 和 Key！")
         return None
     try:
         return create_client(SUPABASE_URL, SUPABASE_KEY)
@@ -228,11 +228,11 @@ with tab1:
                     if i + j < num_plots:
                         config = plots_config[i + j]
                         with cols[j]:
-                            fig, ax1 = plt.subplots(figsize=(8, 6)) 
+                            # 【核心修改点 1】: 增加 figsize 宽度，(12, 5) 比之前的 (8, 6) 宽很多
+                            # 这样时间轴标签水平放下也不会挤
+                            fig, ax1 = plt.subplots(figsize=(12, 5)) 
                             
                             has_data = False
-                            
-                            # 收集这个图中将会画的所有物理量和单位，用于判断左轴标题
                             plotted_vars = set()
                             plotted_units = set()
 
@@ -243,55 +243,45 @@ with tab1:
                                         has_data = True
                                         y = process_data(sub['value'], ma_window, spike_thresh)
                                         
-                                        # 获取单位
                                         unit = sub['unit'].iloc[0] if pd.notna(sub['unit'].iloc[0]) else ""
-                                        
-                                        # 记录下来用于判断
                                         plotted_vars.add(vtype)
                                         plotted_units.add(unit)
                                         
-                                        # 图例标签带上单位: "5号-温度 (℃)"
                                         label_str = f"{sid}-{vtype} ({unit})"
                                         ax1.plot(sub['timestamp'], y, label=label_str, linewidth=1.5)
                             
                             ax2 = ax1.twinx()
                             if show_rainfall and not df_rain.empty:
-                                # 右轴图例: "降雨量 (mm)"
                                 ax2.plot(df_rain['timestamp'], df_rain['value'], color='#1f77b4', linestyle='--', alpha=0.4, label='降雨量 (mm)')
                             
                             # === 样式精修 ===
                             fp = zh_font if zh_font else None
                             
-                            # 1. 动态左轴标题 logic
-                            # 如果只有一种物理量和一种单位，则显示 "物理量 (单位)"
+                            # 1. 动态左轴标题
                             if len(plotted_vars) == 1 and len(plotted_units) == 1:
                                 var_name = list(plotted_vars)[0]
                                 unit_name = list(plotted_units)[0]
                                 y_label = f"{var_name} ({unit_name})"
                             else:
-                                # 否则显示通用标题
                                 y_label = "数值 (Value)"
 
                             ax1.set_ylabel(y_label, fontproperties=fp, fontsize=12)
                             
-                            # 2. 下轴时间刻度优化 (防止重叠)
+                            # 2. 下轴时间刻度优化 (水平放置)
                             ax1.set_xlabel("时间 (Time)", fontproperties=fp, fontsize=12)
-                            # 强制限制刻度数量，例如最多6个
-                            ax1.xaxis.set_major_locator(ticker.MaxNLocator(nbins=6))
-                            # 自动旋转日期标签，防止挤在一起
-                            fig.autofmt_xdate(rotation=30)
+                            # 限制刻度数量，防止水平放置时挤在一起
+                            ax1.xaxis.set_major_locator(ticker.MaxNLocator(nbins=7)) 
+                            
+                            # 【核心修改点 2】: 删除了 fig.autofmt_xdate(rotation=30)
+                            # 默认就是水平的，不需要额外代码
 
                             # 3. 标题
                             ax1.set_title(config['title'], fontproperties=fp, fontsize=14, fontweight='bold', pad=10)
                             
                             # 4. 刻度样式
                             ax1.tick_params(axis='both', direction='in', which='both', top=True, right=False, labeltop=False, labelright=False)
-                            
-                            # 右轴样式优化
                             ax2.tick_params(axis='y', direction='in', right=True, labelright=False)
-                            # 右轴标题: "降雨量 (mm)"
                             ax2.set_ylabel("降雨量 (mm)", fontproperties=fp, fontsize=12) 
-                            
                             ax1.grid(True, linestyle=':', alpha=0.3)
                             
                             # 5. 图例
@@ -323,4 +313,5 @@ with tab2:
                 else: st.error(upload_msg)
         else:
             st.error(msg)
+
 
