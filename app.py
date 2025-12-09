@@ -2,6 +2,8 @@ import streamlit as st
 import pandas as pd
 import matplotlib.pyplot as plt
 import matplotlib.font_manager as fm
+import matplotlib.ticker as ticker  # <--- 之前报错就是因为缺了这一行
+import matplotlib.dates as mdates
 from supabase import create_client
 from datetime import datetime, timedelta
 import re
@@ -321,3 +323,4 @@ with tab2:
                 else: st.error(upload_msg)
         else:
             st.error(msg)
+
