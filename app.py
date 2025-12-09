@@ -1,17 +1,17 @@
 import streamlit as st
 import pandas as pd
 import matplotlib.pyplot as plt
+import matplotlib.font_manager as fm
 from supabase import create_client
 from datetime import datetime, timedelta
-import matplotlib.ticker as ticker
 import re
+import os
+import requests
 
 # ================= 1. 配置区域 =================
-# 替换为你的 Supabase 项目 URL 和 Key (都在同一个项目里)
-SUPABASE_URL = "https://vetupomjinhylqpxnrhn.supabase.co"
-SUPABASE_KEY = "sb_publishable_MpHqZeFn_U-lM19lpEBtMA_NR3Mx3mO"
+SUPABASE_URL = "你的_SUPABASE_URL"
+SUPABASE_KEY = "你的_SUPABASE_KEY"
 
-# 表名配置
 TABLE_SENSORS = "sensor_measurements"
 TABLE_RAIN = "weather_logs"
 
@@ -30,7 +30,7 @@ def get_chinese_font():
     # 1. 如果本地没有，先下载
     if not os.path.exists(font_name):
         try:
-            # 备用下载地址 (GitHub Raw)
+            # 使用 GitHub Raw 镜像源下载 SimHei 字体
             url = "https://github.com/StellarCN/scp_zh/raw/master/fonts/SimHei.ttf"
             response = requests.get(url, timeout=30)
             with open(font_name, "wb") as f:
@@ -48,11 +48,6 @@ def get_chinese_font():
 
 # 获取字体对象 (供后面画图调用)
 zh_font = get_chinese_font()
-
-# 全局设置 (备用)
-if zh_font:
-    plt.rcParams['font.sans-serif'] = [zh_font.get_name()]
-    plt.rcParams['axes.unicode_minus'] = False
 
 # ================= 3. 核心功能函数 =================
 @st.cache_resource
@@ -225,13 +220,13 @@ with tab1:
                 cols_per_row = 2
             else:
                 cols_per_row = 3
-                
-            # 按行遍历绘图，防止“一列长龙”
+            
+            # 计算行数
+            # 这种写法确保了图表是按行填充的，比如2列布局：
+            # 图1 图2
+            # 图3 图4
             for i in range(0, num_plots, cols_per_row):
-                # 创建这一行的列容器
                 cols = st.columns(cols_per_row)
-                
-                # 在这一行里填充图表
                 for j in range(cols_per_row):
                     if i + j < num_plots:
                         config = plots_config[i + j]
@@ -309,5 +304,3 @@ with tab2:
                 else: st.error(upload_msg)
         else:
             st.error(msg)
-
-
