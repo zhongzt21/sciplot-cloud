@@ -18,48 +18,38 @@ TABLE_RAIN = "weather_logs"
 # 正则表达式
 REGEX_PATTERN = re.compile(r"^([a-zA-Z0-9]+)(?:号)?([\u4e00-\u9fa5]+)\s+([\u4e00-\u9fa5]+)(?:[\(（](.+)[\)）])?(?:\.\d+)?$")
 
-# ================= 2. 核心功能函数 (优先加载数据库) =================
+# ================= 2. 核心功能函数 =================
 @st.cache_resource
 def init_connection():
-    """初始化数据库连接，带详细报错"""
-    # 检查用户是否忘了填 Key
     if "你的_SUPABASE" in SUPABASE_URL:
-        st.error("❌ 错误：请在代码第 12-13 行填入你自己的 Supabase URL 和 Key！")
+        st.error("❌ 错误：请在代码第 13-14 行填入你自己的 Supabase URL 和 Key！")
         return None
-        
     try:
-        client = create_client(SUPABASE_URL, SUPABASE_KEY)
-        return client
+        return create_client(SUPABASE_URL, SUPABASE_KEY)
     except Exception as e:
         st.error(f"❌ 数据库连接失败: {e}")
         return None
 
 supabase = init_connection()
 
-# ================= 3. 字体修复 (非阻塞模式) =================
 @st.cache_resource
 def get_chinese_font():
-    """尝试获取中文字体，失败则静默跳过，不卡死程序"""
+    """下载并加载中文字体，解决乱码"""
     font_name = "SimHei.ttf"
     if not os.path.exists(font_name):
         try:
-            # 尝试下载
             url = "https://github.com/StellarCN/scp_zh/raw/master/fonts/SimHei.ttf"
-            response = requests.get(url, timeout=5) # 5秒超时，防止卡死
+            response = requests.get(url, timeout=5)
             with open(font_name, "wb") as f:
                 f.write(response.content)
-        except:
-            # 下载失败也不报错，直接返回 None，保证程序能跑
-            pass
-
+        except: pass
     try:
         return fm.FontProperties(fname=font_name)
-    except:
-        return None
+    except: return None
 
 zh_font = get_chinese_font()
 
-# ================= 4. 数据处理逻辑 =================
+# ================= 3. 数据处理逻辑 =================
 def parse_excel_file(uploaded_file):
     try:
         df = pd.read_excel(uploaded_file, header=2)
@@ -127,7 +117,6 @@ def get_sensor_data(start_time, end_time):
             df['value'] = pd.to_numeric(df['value'], errors='coerce')
         return df
     except Exception as e:
-        # ⚠️ 这里会把具体的查询错误显示出来
         st.sidebar.error(f"查询出错: {e}")
         return pd.DataFrame()
 
@@ -152,14 +141,13 @@ def process_data(series, window_size, spike_threshold):
         series = series.rolling(window=window_size, min_periods=1, center=True).mean()
     return series
 
-# ================= 5. 页面主程序 =================
+# ================= 4. 页面主程序 =================
 st.set_page_config(page_title="SciPlot Cloud", layout="wide")
 st.title("📊 SciPlot Cloud - 自动化科研绘图平台")
 
-# --- 状态检查 ---
 if not supabase:
     st.warning("⚠️ 数据库未连接，请检查代码配置。")
-    st.stop() # 停止运行后续代码
+    st.stop()
 
 tab1, tab2 = st.tabs(["📈 数据绘图", "📂 数据上传"])
 
@@ -168,7 +156,6 @@ with tab1:
     with st.sidebar:
         st.header("1. 绘图控制")
         c1, c2 = st.columns(2)
-        # 默认查询改为最近 30 天，防止查不到数据
         start_date = c1.date_input("开始日期", datetime.now() - timedelta(days=30))
         end_date = c2.date_input("结束日期", datetime.now())
         show_rainfall = st.checkbox("叠加降雨量", value=True)
@@ -196,7 +183,7 @@ with tab1:
             st.session_state['rain_data'] = df_rain
             
             if df_sensor.empty:
-                st.sidebar.warning(f"⚠️ 在 {start_date} 至 {end_date} 期间未找到数据。请尝试调整日期范围。")
+                st.sidebar.warning(f"⚠️ 在 {start_date} 至 {end_date} 期间未找到数据。")
             else:
                 st.sidebar.success(f"✅ 已加载 {len(df_sensor)} 条数据")
 
@@ -209,7 +196,6 @@ with tab1:
         all_vars = sorted(df['variable_type'].unique())
         plots_config = []
 
-        # 配置逻辑
         if plot_mode == "自定义选择":
             num = st.number_input("窗口数量", 1, 10, 1)
             for i in range(num):
@@ -226,7 +212,6 @@ with tab1:
             t_ids = st.multiselect("选择号码", all_ids, default=all_ids)
             for v in t_vars: plots_config.append({"title":f"{v} 对比","ids":t_ids,"vars":[v]})
 
-        # === 核心绘图部分 ===
         if st.button("🎨 生成图表", key="btn_plot", type="primary") and plots_config:
             
             # --- 智能网格布局 ---
@@ -244,32 +229,70 @@ with tab1:
                             fig, ax1 = plt.subplots(figsize=(8, 6)) 
                             
                             has_data = False
+                            
+                            # 收集这个图中将会画的所有物理量和单位，用于判断左轴标题
+                            plotted_vars = set()
+                            plotted_units = set()
+
                             for sid in config['ids']:
                                 for vtype in config['vars']:
                                     sub = df[(df['sensor_id']==sid)&(df['variable_type']==vtype)].sort_values('timestamp')
                                     if not sub.empty:
                                         has_data = True
                                         y = process_data(sub['value'], ma_window, spike_thresh)
-                                        ax1.plot(sub['timestamp'], y, label=f"{sid}-{vtype}", linewidth=1.5)
+                                        
+                                        # 获取单位
+                                        unit = sub['unit'].iloc[0] if pd.notna(sub['unit'].iloc[0]) else ""
+                                        
+                                        # 记录下来用于判断
+                                        plotted_vars.add(vtype)
+                                        plotted_units.add(unit)
+                                        
+                                        # 图例标签带上单位: "5号-温度 (℃)"
+                                        label_str = f"{sid}-{vtype} ({unit})"
+                                        ax1.plot(sub['timestamp'], y, label=label_str, linewidth=1.5)
                             
                             ax2 = ax1.twinx()
                             if show_rainfall and not df_rain.empty:
-                                ax2.plot(df_rain['timestamp'], df_rain['value'], color='#1f77b4', linestyle='--', alpha=0.4, label='降雨量')
+                                # 右轴图例: "降雨量 (mm)"
+                                ax2.plot(df_rain['timestamp'], df_rain['value'], color='#1f77b4', linestyle='--', alpha=0.4, label='降雨量 (mm)')
                             
-                            # === 样式精修 (带字体回退保护) ===
-                            # 如果 zh_font 下载失败，这里的 fontproperties 传 None 就不会报错，只是显示回方框
+                            # === 样式精修 ===
                             fp = zh_font if zh_font else None
                             
+                            # 1. 动态左轴标题 logic
+                            # 如果只有一种物理量和一种单位，则显示 "物理量 (单位)"
+                            if len(plotted_vars) == 1 and len(plotted_units) == 1:
+                                var_name = list(plotted_vars)[0]
+                                unit_name = list(plotted_units)[0]
+                                y_label = f"{var_name} ({unit_name})"
+                            else:
+                                # 否则显示通用标题
+                                y_label = "数值 (Value)"
+
+                            ax1.set_ylabel(y_label, fontproperties=fp, fontsize=12)
+                            
+                            # 2. 下轴时间刻度优化 (防止重叠)
                             ax1.set_xlabel("时间 (Time)", fontproperties=fp, fontsize=12)
-                            ax1.set_ylabel("数值 (Value)", fontproperties=fp, fontsize=12)
+                            # 强制限制刻度数量，例如最多6个
+                            ax1.xaxis.set_major_locator(ticker.MaxNLocator(nbins=6))
+                            # 自动旋转日期标签，防止挤在一起
+                            fig.autofmt_xdate(rotation=30)
+
+                            # 3. 标题
                             ax1.set_title(config['title'], fontproperties=fp, fontsize=14, fontweight='bold', pad=10)
                             
+                            # 4. 刻度样式
                             ax1.tick_params(axis='both', direction='in', which='both', top=True, right=False, labeltop=False, labelright=False)
+                            
+                            # 右轴样式优化
                             ax2.tick_params(axis='y', direction='in', right=True, labelright=False)
-                            ax2.set_ylabel("") 
-                            ax1.tick_params(axis='x', top=True, labeltop=False)
+                            # 右轴标题: "降雨量 (mm)"
+                            ax2.set_ylabel("降雨量 (mm)", fontproperties=fp, fontsize=12) 
+                            
                             ax1.grid(True, linestyle=':', alpha=0.3)
                             
+                            # 5. 图例
                             if has_data:
                                 lines1, labels1 = ax1.get_legend_handles_labels()
                                 if show_rainfall:
@@ -298,4 +321,3 @@ with tab2:
                 else: st.error(upload_msg)
         else:
             st.error(msg)
-
