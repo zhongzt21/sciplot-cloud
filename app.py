@@ -228,11 +228,11 @@ with tab1:
                     if i + j < num_plots:
                         config = plots_config[i + j]
                         with cols[j]:
-                            # 【核心修改点 1】: 增加 figsize 宽度，(12, 5) 比之前的 (8, 6) 宽很多
-                            # 这样时间轴标签水平放下也不会挤
-                            fig, ax1 = plt.subplots(figsize=(12, 5)) 
+                            # 【修正】: 使用 (10, 6) 黄金比例，既不扁也不窄
+                            fig, ax1 = plt.subplots(figsize=(10, 6)) 
                             
                             has_data = False
+                            
                             plotted_vars = set()
                             plotted_units = set()
 
@@ -247,6 +247,7 @@ with tab1:
                                         plotted_vars.add(vtype)
                                         plotted_units.add(unit)
                                         
+                                        # 图例带单位
                                         label_str = f"{sid}-{vtype} ({unit})"
                                         ax1.plot(sub['timestamp'], y, label=label_str, linewidth=1.5)
                             
@@ -267,14 +268,11 @@ with tab1:
 
                             ax1.set_ylabel(y_label, fontproperties=fp, fontsize=12)
                             
-                            # 2. 下轴时间刻度优化 (水平放置)
+                            # 2. 下轴时间刻度优化 (水平放置 + 稀疏化)
                             ax1.set_xlabel("时间 (Time)", fontproperties=fp, fontsize=12)
                             # 限制刻度数量，防止水平放置时挤在一起
-                            ax1.xaxis.set_major_locator(ticker.MaxNLocator(nbins=7)) 
+                            ax1.xaxis.set_major_locator(ticker.MaxNLocator(nbins=6)) 
                             
-                            # 【核心修改点 2】: 删除了 fig.autofmt_xdate(rotation=30)
-                            # 默认就是水平的，不需要额外代码
-
                             # 3. 标题
                             ax1.set_title(config['title'], fontproperties=fp, fontsize=14, fontweight='bold', pad=10)
                             
@@ -313,5 +311,3 @@ with tab2:
                 else: st.error(upload_msg)
         else:
             st.error(msg)
-
-
