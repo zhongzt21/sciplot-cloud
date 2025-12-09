@@ -18,47 +18,48 @@ TABLE_RAIN = "weather_logs"
 # 正则表达式
 REGEX_PATTERN = re.compile(r"^([a-zA-Z0-9]+)(?:号)?([\u4e00-\u9fa5]+)\s+([\u4e00-\u9fa5]+)(?:[\(（](.+)[\)）])?(?:\.\d+)?$")
 
-# ================= 2. 字体修复核心逻辑 (强制解决乱码) =================
-@st.cache_resource
-def get_chinese_font():
-    """
-    下载并返回一个可用的中文字体对象 (FontProperties)。
-    这样我们可以显式传给 matplotlib 的各个函数，确保 100% 显示中文。
-    """
-    font_name = "SimHei.ttf"
-    
-    # 1. 如果本地没有，先下载
-    if not os.path.exists(font_name):
-        try:
-            # 使用 GitHub Raw 镜像源下载 SimHei 字体
-            url = "https://github.com/StellarCN/scp_zh/raw/master/fonts/SimHei.ttf"
-            response = requests.get(url, timeout=30)
-            with open(font_name, "wb") as f:
-                f.write(response.content)
-        except Exception as e:
-            st.error(f"字体下载失败: {e}")
-            return None
-
-    # 2. 创建字体属性对象
-    try:
-        font_prop = fm.FontProperties(fname=font_name)
-        return font_prop
-    except:
-        return None
-
-# 获取字体对象 (供后面画图调用)
-zh_font = get_chinese_font()
-
-# ================= 3. 核心功能函数 =================
+# ================= 2. 核心功能函数 (优先加载数据库) =================
 @st.cache_resource
 def init_connection():
+    """初始化数据库连接，带详细报错"""
+    # 检查用户是否忘了填 Key
+    if "你的_SUPABASE" in SUPABASE_URL:
+        st.error("❌ 错误：请在代码第 12-13 行填入你自己的 Supabase URL 和 Key！")
+        return None
+        
     try:
-        return create_client(SUPABASE_URL, SUPABASE_KEY)
-    except:
+        client = create_client(SUPABASE_URL, SUPABASE_KEY)
+        return client
+    except Exception as e:
+        st.error(f"❌ 数据库连接失败: {e}")
         return None
 
 supabase = init_connection()
 
+# ================= 3. 字体修复 (非阻塞模式) =================
+@st.cache_resource
+def get_chinese_font():
+    """尝试获取中文字体，失败则静默跳过，不卡死程序"""
+    font_name = "SimHei.ttf"
+    if not os.path.exists(font_name):
+        try:
+            # 尝试下载
+            url = "https://github.com/StellarCN/scp_zh/raw/master/fonts/SimHei.ttf"
+            response = requests.get(url, timeout=5) # 5秒超时，防止卡死
+            with open(font_name, "wb") as f:
+                f.write(response.content)
+        except:
+            # 下载失败也不报错，直接返回 None，保证程序能跑
+            pass
+
+    try:
+        return fm.FontProperties(fname=font_name)
+    except:
+        return None
+
+zh_font = get_chinese_font()
+
+# ================= 4. 数据处理逻辑 =================
 def parse_excel_file(uploaded_file):
     try:
         df = pd.read_excel(uploaded_file, header=2)
@@ -125,7 +126,10 @@ def get_sensor_data(start_time, end_time):
             df['timestamp'] = pd.to_datetime(df['timestamp'])
             df['value'] = pd.to_numeric(df['value'], errors='coerce')
         return df
-    except: return pd.DataFrame()
+    except Exception as e:
+        # ⚠️ 这里会把具体的查询错误显示出来
+        st.sidebar.error(f"查询出错: {e}")
+        return pd.DataFrame()
 
 def get_rainfall_data(start_time, end_time):
     if not supabase: return pd.DataFrame()
@@ -148,9 +152,14 @@ def process_data(series, window_size, spike_threshold):
         series = series.rolling(window=window_size, min_periods=1, center=True).mean()
     return series
 
-# ================= 4. 页面主程序 =================
+# ================= 5. 页面主程序 =================
 st.set_page_config(page_title="SciPlot Cloud", layout="wide")
 st.title("📊 SciPlot Cloud - 自动化科研绘图平台")
+
+# --- 状态检查 ---
+if not supabase:
+    st.warning("⚠️ 数据库未连接，请检查代码配置。")
+    st.stop() # 停止运行后续代码
 
 tab1, tab2 = st.tabs(["📈 数据绘图", "📂 数据上传"])
 
@@ -159,7 +168,8 @@ with tab1:
     with st.sidebar:
         st.header("1. 绘图控制")
         c1, c2 = st.columns(2)
-        start_date = c1.date_input("开始日期", datetime.now() - timedelta(days=7))
+        # 默认查询改为最近 30 天，防止查不到数据
+        start_date = c1.date_input("开始日期", datetime.now() - timedelta(days=30))
         end_date = c2.date_input("结束日期", datetime.now())
         show_rainfall = st.checkbox("叠加降雨量", value=True)
         
@@ -175,11 +185,20 @@ with tab1:
 
     # 数据加载
     if fetch_btn or 'raw_data' not in st.session_state:
-        with st.spinner("从云端加载数据中..."):
+        with st.spinner("正在连接数据库查询..."):
             t_start = datetime.combine(start_date, datetime.min.time())
             t_end = datetime.combine(end_date, datetime.max.time())
-            st.session_state['raw_data'] = get_sensor_data(t_start, t_end)
-            st.session_state['rain_data'] = get_rainfall_data(t_start, t_end) if show_rainfall else pd.DataFrame()
+            
+            df_sensor = get_sensor_data(t_start, t_end)
+            df_rain = get_rainfall_data(t_start, t_end) if show_rainfall else pd.DataFrame()
+            
+            st.session_state['raw_data'] = df_sensor
+            st.session_state['rain_data'] = df_rain
+            
+            if df_sensor.empty:
+                st.sidebar.warning(f"⚠️ 在 {start_date} 至 {end_date} 期间未找到数据。请尝试调整日期范围。")
+            else:
+                st.sidebar.success(f"✅ 已加载 {len(df_sensor)} 条数据")
 
     # 绘图逻辑
     if 'raw_data' in st.session_state and not st.session_state['raw_data'].empty:
@@ -210,72 +229,47 @@ with tab1:
         # === 核心绘图部分 ===
         if st.button("🎨 生成图表", key="btn_plot", type="primary") and plots_config:
             
-            # --- 智能网格布局 (Smart Grid Layout) ---
+            # --- 智能网格布局 ---
             num_plots = len(plots_config)
+            if num_plots == 1: cols_per_row = 1
+            elif num_plots <= 4: cols_per_row = 2
+            else: cols_per_row = 3
             
-            # 策略：如果只有一个图，用1列；如果是2-4个图，用2列；更多则用3列
-            if num_plots == 1:
-                cols_per_row = 1
-            elif num_plots <= 4:
-                cols_per_row = 2
-            else:
-                cols_per_row = 3
-            
-            # 计算行数
-            # 这种写法确保了图表是按行填充的，比如2列布局：
-            # 图1 图2
-            # 图3 图4
             for i in range(0, num_plots, cols_per_row):
                 cols = st.columns(cols_per_row)
                 for j in range(cols_per_row):
                     if i + j < num_plots:
                         config = plots_config[i + j]
                         with cols[j]:
-                            # 增大一点图表高度，让内容更清晰
                             fig, ax1 = plt.subplots(figsize=(8, 6)) 
                             
                             has_data = False
-                            # 画左轴数据
                             for sid in config['ids']:
                                 for vtype in config['vars']:
                                     sub = df[(df['sensor_id']==sid)&(df['variable_type']==vtype)].sort_values('timestamp')
                                     if not sub.empty:
                                         has_data = True
                                         y = process_data(sub['value'], ma_window, spike_thresh)
-                                        # 这里的 label 可以用中文，必须传 fontproperties
                                         ax1.plot(sub['timestamp'], y, label=f"{sid}-{vtype}", linewidth=1.5)
                             
-                            # 画右轴 (降雨量)
                             ax2 = ax1.twinx()
                             if show_rainfall and not df_rain.empty:
                                 ax2.plot(df_rain['timestamp'], df_rain['value'], color='#1f77b4', linestyle='--', alpha=0.4, label='降雨量')
                             
-                            # === 样式精修 (解决标题缺失和乱码) ===
+                            # === 样式精修 (带字体回退保护) ===
+                            # 如果 zh_font 下载失败，这里的 fontproperties 传 None 就不会报错，只是显示回方框
+                            fp = zh_font if zh_font else None
                             
-                            # 1. 设置轴标题 (Explicit Axis Titles)
-                            # 使用 fontproperties=zh_font 强制使用中文字体
-                            ax1.set_xlabel("时间 (Time)", fontproperties=zh_font, fontsize=12)
-                            ax1.set_ylabel("数值 (Value)", fontproperties=zh_font, fontsize=12)
+                            ax1.set_xlabel("时间 (Time)", fontproperties=fp, fontsize=12)
+                            ax1.set_ylabel("数值 (Value)", fontproperties=fp, fontsize=12)
+                            ax1.set_title(config['title'], fontproperties=fp, fontsize=14, fontweight='bold', pad=10)
                             
-                            # 2. 图表标题
-                            ax1.set_title(config['title'], fontproperties=zh_font, fontsize=14, fontweight='bold', pad=10)
-                            
-                            # 3. 轴刻度控制 (Framed Style)
-                            # 左轴/下轴：开启上刻度和右刻度，但不显示数字
-                            ax1.tick_params(axis='both', direction='in', which='both', 
-                                            top=True, right=False, 
-                                            labeltop=False, labelright=False)
-                            
-                            # 右轴：开启刻度，不显示数字，不显示标题
+                            ax1.tick_params(axis='both', direction='in', which='both', top=True, right=False, labeltop=False, labelright=False)
                             ax2.tick_params(axis='y', direction='in', right=True, labelright=False)
-                            ax2.set_ylabel("") # 确保右轴无标题
-
-                            # 上轴：开启刻度，不显示标签
+                            ax2.set_ylabel("") 
                             ax1.tick_params(axis='x', top=True, labeltop=False)
-                            
                             ax1.grid(True, linestyle=':', alpha=0.3)
                             
-                            # 4. 图例 (强制应用字体)
                             if has_data:
                                 lines1, labels1 = ax1.get_legend_handles_labels()
                                 if show_rainfall:
@@ -284,9 +278,9 @@ with tab1:
                                 else:
                                     leg = ax1.legend(loc='best', frameon=False)
                                 
-                                # 遍历图例文本，逐个设置字体
-                                for text in leg.get_texts():
-                                    text.set_fontproperties(zh_font)
+                                if fp:
+                                    for text in leg.get_texts():
+                                        text.set_fontproperties(fp)
                             
                             st.pyplot(fig)
 
