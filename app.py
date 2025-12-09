@@ -107,45 +107,77 @@ def upload_to_supabase(data_list):
     except Exception as e:
         return False, f"上传中断: {e}"
 
+# ================= 替换原有的 get_sensor_data =================
 def get_sensor_data(start_time, end_time):
     if not supabase: return pd.DataFrame()
     try:
-        response = supabase.table(TABLE_SENSORS).select("*") \
+        # 1. 明确只查需要的列，防止数据量过大超时
+        # 2. 增加 limit(100000)，防止默认的 1000 条限制截断数据
+        response = supabase.table(TABLE_SENSORS) \
+            .select("timestamp, sensor_id, variable_type, value, unit") \
             .gte("timestamp", start_time.isoformat()) \
             .lte("timestamp", end_time.isoformat()) \
+            .limit(100000) \
             .order("timestamp").execute()
-        df = pd.DataFrame(response.data)
-        if not df.empty:
-            df['timestamp'] = pd.to_datetime(df['timestamp'])
-            # 【关键修复】强制移除时区信息，确保和降雨数据对齐
-            if df['timestamp'].dt.tz is not None:
-                df['timestamp'] = df['timestamp'].dt.tz_localize(None)
-            
-            df['value'] = pd.to_numeric(df['value'], errors='coerce')
-        return df
-    except Exception as e:
-        return pd.DataFrame()
-
-def get_rainfall_data(start_time, end_time):
-    if not supabase: return pd.DataFrame()
-    try:
-        response = supabase.table(TABLE_RAIN).select("created_at, rain_intensity") \
-            .gte("created_at", start_time.isoformat()) \
-            .lte("created_at", end_time.isoformat()) \
-            .order("created_at").execute()
         
         df = pd.DataFrame(response.data)
+        
         if not df.empty:
-            df = df.rename(columns={"created_at": "timestamp", "rain_intensity": "value"})
-            df['timestamp'] = pd.to_datetime(df['timestamp'])
+            # 强力清洗：任何非时间格式的都会变成 NaT (Not a Time)
+            df['timestamp'] = pd.to_datetime(df['timestamp'], errors='coerce')
             
-            # 【关键修复】Supabase 返回的时间带时区 (UTC)，必须强制移除
+            # 去除时区 (关键)
             if df['timestamp'].dt.tz is not None:
                 df['timestamp'] = df['timestamp'].dt.tz_localize(None)
                 
+            # 强力清洗数值：非数字变成 NaN
             df['value'] = pd.to_numeric(df['value'], errors='coerce')
+            
+            # 剔除坏数据（时间无效 或 数值无效 的行直接丢掉）
+            df = df.dropna(subset=['timestamp', 'value'])
+            
         return df
     except Exception as e:
+        # 如果出错，在侧边栏打印出来，而不是直接吞掉
+        st.sidebar.error(f"⚠️ 传感器数据读取崩溃: {e}")
+        return pd.DataFrame()
+
+# ================= 替换原有的 get_rainfall_data =================
+def get_rainfall_data(start_time, end_time):
+    if not supabase: return pd.DataFrame()
+    try:
+        # 1. 同样增加 limit 防止截断
+        response = supabase.table(TABLE_RAIN) \
+            .select("created_at, rain_intensity") \
+            .gte("created_at", start_time.isoformat()) \
+            .lte("created_at", end_time.isoformat()) \
+            .limit(100000) \
+            .order("created_at").execute()
+        
+        df = pd.DataFrame(response.data)
+        
+        if not df.empty:
+            df = df.rename(columns={"created_at": "timestamp", "rain_intensity": "value"})
+            
+            # 强力清洗时间
+            df['timestamp'] = pd.to_datetime(df['timestamp'], errors='coerce')
+            
+            # 去除时区 (关键，防止和传感器数据打架)
+            if df['timestamp'].dt.tz is not None:
+                df['timestamp'] = df['timestamp'].dt.tz_localize(None)
+            
+            # 强力清洗数值
+            df['value'] = pd.to_numeric(df['value'], errors='coerce')
+            
+            # 剔除坏数据
+            df = df.dropna(subset=['timestamp'])
+            
+            # 再次按时间排序，确保万无一失
+            df = df.sort_values('timestamp')
+            
+        return df
+    except Exception as e:
+        st.sidebar.error(f"⚠️ 降雨数据读取崩溃: {e}")
         return pd.DataFrame()
 
 def process_data(series, window_size, spike_threshold):
@@ -369,4 +401,5 @@ with tab2:
                 else: st.error(upload_msg)
         else:
             st.error(msg)
+
 
