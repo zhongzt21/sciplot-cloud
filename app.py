@@ -66,13 +66,13 @@ def optimize_dataframe(df, time_col='timestamp'):
     max_t = df[time_col].max()
     time_span = max_t - min_t
     
-    if time_span.days > 365: rule = '1D'
-    elif time_span.days > 90: rule = '6H'
-    elif time_span.days > 30: rule = '1H'
-    elif time_span.days > 7: rule = '30T'
-    else: return df
+    #if time_span.days > 365: rule = '1D'
+    #elif time_span.days > 90: rule = '6H'
+    #elif time_span.days > 30: rule = '1H'
+    #elif time_span.days > 7: rule = '30T'
+    #else: return df
     
-    st.toast(f"💡 数据量较大 ({total_rows}行)，已优化显示粒度: {rule}", icon="⚡")
+    #st.toast(f"💡 数据量较大 ({total_rows}行)，已优化显示粒度: {rule}", icon="⚡")
     df = df.set_index(time_col)
     # 按传感器ID和类型分组降采样
     resampled = df.groupby(['sensor_id', 'variable_type', 'unit'])['value'].resample(rule).mean().reset_index()
@@ -401,6 +401,7 @@ with tab2:
                 else: st.error(upload_msg)
         else:
             st.error(msg)
+
 
 
 
