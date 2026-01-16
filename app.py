@@ -211,8 +211,33 @@ def upload_to_supabase(data_list):
     except Exception as e: return False, str(e)
 
 def process_data(series, window_size, spike_threshold):
-    if spike_threshold > 0: series = series.where(series.diff().abs() < spike_threshold)
-    if window_size > 1: series = series.rolling(window=window_size, min_periods=1, center=True).mean()
+    # 建立副本，防止修改原始数据引发警告
+    series = series.copy()
+    
+    # 1. 改进版去噪：基于滚动中值的去尖峰 (Despiking)
+    if spike_threshold > 0:
+        # 强制使用至少窗口为5来进行异常检测，即便不做平滑，检测窗口也不能太小
+        despike_window = max(5, window_size)
+        
+        # 计算局部中值 (Rolling Median)
+        # 中值对尖峰极其不敏感，是判断是否为“异常值”的最佳基准
+        rolling_median = series.rolling(window=despike_window, center=True, min_periods=1).median()
+        
+        # 计算当前值与局部中值的 绝对偏差
+        deviation = (series - rolling_median).abs()
+        
+        # 找出偏差超过阈值的点 (这些就是尖峰)
+        outliers = deviation > spike_threshold
+        
+        # 【关键步骤】将尖峰替换为局部的中值
+        # 相比原来的置为 NaN，这样能保持曲线连贯，不会出现断点
+        if outliers.any():
+            series.loc[outliers] = rolling_median.loc[outliers]
+
+    # 2. 平滑处理 (保持原有逻辑：移动平均)
+    if window_size > 1:
+        series = series.rolling(window=window_size, min_periods=1, center=True).mean()
+        
     return series
 
 # ================= 4. 页面主程序 =================
@@ -398,6 +423,7 @@ with tab2:
                 else: st.error(upload_msg)
         else:
             st.error(msg)
+
 
 
 
